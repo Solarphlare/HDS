@@ -5,7 +5,7 @@ server::response::response(int status, const std::string& body, const std::strin
     headers["Content-Length"] = std::to_string(body.size());
     headers["Content-Type"] = content_type;
     headers["Connection"] = "close";
-    headers["Server"] = "Solar/1.0";
+    headers["Server"] = "HDS/1.0.1";
 
     this->body = std::vector<uint8_t>(body.begin(), body.end());
 }
@@ -14,7 +14,7 @@ server::response::response(int status, const std::vector<uint8_t>& body, const s
     headers["Content-Length"] = std::to_string(body.size());
     headers["Content-Type"] = content_type;
     headers["Connection"] = "close";
-    headers["Server"] = "Solar/1.0";
+    headers["Server"] = "HDS/1.0.1";
 }
 
 void server::response::set_header(const std::string& key, const std::string& value) {
