@@ -8,12 +8,12 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <memory>
 #include "request.h"
 #include "deploy.h"
 
 int socket_fd;
 struct sockaddr_in6 server_addr;
-SSL_CTX *ctx;
 
 void initialize_socket() {
     if ((socket_fd = socket(AF_INET6, SOCK_STREAM, 0)) < 0) {
@@ -43,7 +43,7 @@ void initialize_socket() {
     }
 }
 
-void handle_client(int client_fd, const sockaddr_in6* client_addr) {
+void handle_client(SSL_CTX* ctx, int client_fd, const sockaddr_in6 client_addr) {
     server::request request;
 
     try {
@@ -54,7 +54,7 @@ void handle_client(int client_fd, const sockaddr_in6* client_addr) {
     }
 
     char client_ip[INET6_ADDRSTRLEN];
-    inet_ntop(AF_INET6, &client_addr->sin6_addr, client_ip, sizeof(client_ip));
+    inet_ntop(AF_INET6, &client_addr.sin6_addr, client_ip, sizeof(client_ip));
     std::cout << (request.method == server::http_method::POST ? "POST" : "OTHER") << " " << request.path << " from " << client_ip << '\n';
 
     if (request.path != "/hildabot/deploy") {
@@ -75,14 +75,14 @@ int main() {
     OPENSSL_init_ssl(OPENSSL_INIT_ADD_ALL_CIPHERS | OPENSSL_INIT_ADD_ALL_DIGESTS, nullptr);
     initialize_socket();
 
-    ctx = SSL_CTX_new(TLS_server_method());
+    std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> ctx(SSL_CTX_new(TLS_server_method()), SSL_CTX_free);
     if (!ctx) {
         throw std::runtime_error("Unable to create SSL context");
     }
 
-    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0)
+    if (SSL_CTX_use_certificate_file(ctx.get(), "cert.pem", SSL_FILETYPE_PEM) <= 0)
         throw std::runtime_error("Unable to load certificate file");
-    if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0)
+    if (SSL_CTX_use_PrivateKey_file(ctx.get(), "key.pem", SSL_FILETYPE_PEM) <= 0)
         throw std::runtime_error("Unable to load private key file");
 
     std::cout << "Server started; listening on port " << ntohs(server_addr.sin6_port) << '\n';
@@ -96,7 +96,7 @@ int main() {
             continue;
         }
 
-        std::thread client_thread(handle_client, client_fd, &client_addr);
+        std::thread client_thread(handle_client, ctx.get(), client_fd, client_addr);
         client_thread.detach();
     }
 

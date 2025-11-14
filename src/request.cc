@@ -10,22 +10,23 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <cstdint>
-#include "response.h"
-#include "multipart.h"
 #include <fstream>
 #include <cstring>
+#include <memory>
+#include "response.h"
+#include "multipart.h"
 
 server::request::request(SSL_CTX* ctx, const int client_fd) {
-    this->ssl = SSL_new(ctx);
-    SSL_set_fd(ssl, client_fd);
+    this->ssl = std::unique_ptr<SSL, decltype(&SSL_free)>(SSL_new(ctx), &SSL_free);
+    SSL_set_fd(this->ssl.get(), client_fd);
 
-    int accept_ret = SSL_accept(ssl);
+    int accept_ret = SSL_accept(this->ssl.get());
     if (accept_ret <= 0) {
         int error = ERR_get_error();
         const char* reason = ERR_reason_error_string(error);
         std::cout << "SSL accept error: " << reason << std::endl;
 
-        SSL_free(ssl);
+        SSL_free(this->ssl.get());
         close(client_fd);
         throw std::runtime_error("SSL accept failed");
     }
@@ -38,14 +39,14 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
     const char* headers_end_ptr = nullptr;
     while (!headers_end_ptr) {
         if (used == buffer.size()) {
-            SSL_write(ssl, "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
+            SSL_write(this->ssl.get(), "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
             this->terminate();
             throw std::runtime_error("Request headers exceed limit");
         }
 
-        int r = SSL_read(ssl, buffer.data() + used, static_cast<int>(buffer.size() - used));
+        int r = SSL_read(this->ssl.get(), buffer.data() + used, static_cast<int>(buffer.size() - used));
         if (r <= 0) {
-            SSL_write(ssl, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36);
+            SSL_write(this->ssl.get(), "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36);
             this->terminate();
             throw std::runtime_error("SSL read failed");
         }
@@ -62,7 +63,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
 
     std::string request_line;
     if (!std::getline(stream, request_line) || request_line.empty() || request_line.back() != '\r') {
-        SSL_write(ssl, "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
+        SSL_write(this->ssl.get(), "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
         this->terminate();
         throw std::runtime_error("Malformed HTTP request line");
     }
@@ -93,7 +94,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
         this->method = http_method::DELETE;
     }
     else {
-        SSL_write(ssl, "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
+        SSL_write(this->ssl.get(), "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
         this->terminate();
     }
 
@@ -105,7 +106,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
 
         size_t colon_pos = header_line.find(':');
         if (colon_pos == std::string::npos) {
-            SSL_write(ssl, "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
+            SSL_write(this->ssl.get(), "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
             this->terminate();
             throw std::runtime_error("Malformed HTTP header line");
         }
@@ -138,7 +139,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
         uint64_t max_body_size = 16 * 1024 * 1024;
 
         if (this->headers.find("Content-Length") == this->headers.end()) {
-            SSL_write(ssl, "HTTP/1.1 411 Length Required\r\n\r\n", 32);
+            SSL_write(this->ssl.get(), "HTTP/1.1 411 Length Required\r\n\r\n", 32);
             this->terminate();
             throw std::runtime_error("Missing Content-Length");
         }
@@ -147,13 +148,13 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
         try {
             content_length = std::stoull(this->headers["Content-Length"]);
         } catch (...) {
-            SSL_write(ssl, "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
+            SSL_write(this->ssl.get(), "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
             this->terminate();
             throw std::runtime_error("Invalid Content-Length header");
         }
 
         if (content_length > max_body_size) {
-            SSL_write(ssl, "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
+            SSL_write(this->ssl.get(), "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
             this->terminate();
             throw std::runtime_error("Payload too large");
         }
@@ -172,10 +173,10 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
 
         size_t filled = to_copy;
         while (filled < content_length) {
-            int r = SSL_read(ssl, reinterpret_cast<char*>(this->body->data() + filled), static_cast<int>(content_length - filled));
+            int r = SSL_read(this->ssl.get(), reinterpret_cast<char*>(this->body->data() + filled), static_cast<int>(content_length - filled));
 
             if (r <= 0) {
-                SSL_write(ssl, "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36);
+                SSL_write(this->ssl.get(), "HTTP/1.1 500 Internal Server Error\r\n\r\n", 36);
                 this->terminate();
                 throw std::runtime_error("SSL read failed while reading body");
             }
@@ -183,7 +184,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
             filled += static_cast<size_t>(r);
 
             if (header_end + 4 + filled > max_body_size) {
-                SSL_write(ssl, "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
+                SSL_write(this->ssl.get(), "HTTP/1.1 413 Payload Too Large\r\n\r\n", 34);
                 this->terminate();
                 throw std::runtime_error("Payload too large");
             }
@@ -200,7 +201,7 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
             this->body.reset();
         }
         catch (const std::exception& e) {
-            SSL_write(ssl, "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
+            SSL_write(this->ssl.get(), "HTTP/1.1 400 Bad Request\r\n\r\n", 28);
             this->terminate();
             throw std::runtime_error("Malformed multipart body");
         }
@@ -217,20 +218,18 @@ void server::request::respond(const response& res) const {
     response_stream << "\r\n";
     std::string header_str = response_stream.str();
 
-    SSL_write(this->ssl, header_str.data(), header_str.size());
-    SSL_write(this->ssl, res.body.data(), res.body.size());
+    SSL_write(this->ssl.get(), header_str.data(), header_str.size());
+    SSL_write(this->ssl.get(), res.body.data(), res.body.size());
 }
 
 void server::request::terminate() {
     if (this->ssl) {
-        SSL_shutdown(this->ssl);
-        SSL_shutdown(this->ssl);
+        SSL_shutdown(this->ssl.get());
+        SSL_shutdown(this->ssl.get());
 
-        int fd = SSL_get_fd(this->ssl);
-        if (fd != -1) { [[likely]]
+        int fd = SSL_get_fd(this->ssl.get());
+        if (fd >= 0) { [[likely]]
             close(fd);
         }
-
-        SSL_free(this->ssl);
     }
 }

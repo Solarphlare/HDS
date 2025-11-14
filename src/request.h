@@ -5,6 +5,7 @@
 #include <vector>
 #include <optional>
 #include <cstdint>
+#include <memory>
 #include "response.h"
 #include "multipart.h"
 
@@ -22,7 +23,7 @@ namespace server {
 
     class request {
         private:
-            SSL* ssl;
+            std::unique_ptr<SSL, decltype(&SSL_free)> ssl{nullptr, &SSL_free};
         public:
             http_method method;
             std::string path;
