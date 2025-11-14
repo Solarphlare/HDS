@@ -43,7 +43,7 @@ void initialize_socket() {
     }
 }
 
-void handle_client(int client_fd) {
+void handle_client(int client_fd, const sockaddr_in6* client_addr) {
     server::request request;
 
     try {
@@ -52,6 +52,10 @@ void handle_client(int client_fd) {
     catch (const std::exception& e) {
         return;
     }
+
+    char client_ip[INET6_ADDRSTRLEN];
+    inet_ntop(AF_INET6, &client_addr->sin6_addr, client_ip, sizeof(client_ip));
+    std::cout << (request.method == server::http_method::POST ? "POST" : "OTHER") << " " << request.path << " from " << client_ip << '\n';
 
     if (request.path != "/hildabot/deploy") {
         server::response response(404, "Not Found", "text/plain");
@@ -81,6 +85,8 @@ int main() {
     if (SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0)
         throw std::runtime_error("Unable to load private key file");
 
+    std::cout << "Server started; listening on port " << ntohs(server_addr.sin6_port) << '\n';
+
     while (true) {
         struct sockaddr_in6 client_addr;
         socklen_t addr_len = sizeof(client_addr);
@@ -90,7 +96,7 @@ int main() {
             continue;
         }
 
-        std::thread client_thread(handle_client, client_fd);
+        std::thread client_thread(handle_client, client_fd, &client_addr);
         client_thread.detach();
     }
 
