@@ -74,7 +74,9 @@ void deploy::verify_and_deploy(server::request& req) {
     }
 
     std::system("/usr/bin/sudo /usr/bin/systemctl stop hildabot.service");
-    std::filesystem::rename(temp_path, "/home/willi/bin/hildabot/hildabot");
+    // EXDEV with rename, so copy + remove
+    std::filesystem::copy(temp_path, "/home/willi/bin/hildabot/hildabot", std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::remove(temp_path);
     chmod("/home/willi/bin/hildabot/hildabot", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
     std::system("/usr/bin/sudo /usr/bin/systemctl start hildabot.service");
 
