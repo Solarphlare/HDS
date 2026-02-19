@@ -2,6 +2,10 @@
 #include <cstdio>
 #include <stdexcept>
 #include <algorithm>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/poll.h>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <cstdlib>
@@ -62,23 +66,78 @@ void deploy::verify_and_deploy(server::request& req) {
     temp_file.write(reinterpret_cast<const char*>(payload->data.data()), payload->data.size());
     temp_file.close();
 
-    const std::string command = "/usr/bin/gh attestation verify " + temp_path + " --repo Solarphlare/Hildabot";
-    const int exit_code = std::system(command.c_str());
+    // open socket to /tmp/socket_hds_deployer
+    const int deployer_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (deployer_socket < 0) {
+        std::cout << "Failed to create socket: " << strerror(errno) << "\n";
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
 
-    if (exit_code != 0) {
-        std::cout << "Signature verification failed\n";
-        std::filesystem::remove(temp_path);
+    struct sockaddr_un deployer_addr;
+    std::memset(&deployer_addr, 0, sizeof(deployer_addr));
+    deployer_addr.sun_family = AF_UNIX;
+    std::strncpy(deployer_addr.sun_path, "/tmp/socket_hds_deployer", sizeof(deployer_addr.sun_path) - 1);
+
+    if (connect(deployer_socket, (struct sockaddr*)&deployer_addr, sizeof(deployer_addr)) < 0) {
+        std::cout << "Failed to connect to deployer socket: " << strerror(errno) << "\n";
+        close(deployer_socket);
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
+
+    const int sock_written_bytes = send(deployer_socket, temp_path.c_str(), temp_path.size(), MSG_NOSIGNAL);
+    if (sock_written_bytes < 0) {
+        std::cout << "Failed to send data to deployer socket: " << strerror(errno) << "\n";
+        close(deployer_socket);
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
+
+    struct pollfd pfd[1];
+    pfd[0].fd = deployer_socket;
+    pfd[0].events = POLLIN;
+
+    const int poll_result = poll(pfd, 1, 5000); // 5 second timeout
+    if (poll_result <= 0) {
+        std::cout << "Timeout or error waiting for deployer response: " << strerror(errno) << "\n";
+        close(deployer_socket);
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
+
+    char buffer[512];
+    const int sock_received_bytes = read(deployer_socket, buffer, sizeof(buffer) - 1);
+    if (sock_received_bytes <= 0) {
+        std::cout << "Failed to read from deployer socket: " << strerror(errno) << "\n";
+        close(deployer_socket);
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
+
+    close(deployer_socket);
+
+    buffer[sock_received_bytes] = '\0';
+    std::string response(buffer);
+
+    if (response == "ERR_ATTESTATION_VERIFICATION_FAILED") {
+        std::cout << "Deployer reported attestation verification failure\n";
         req.respond(server::response(400, "Bad Request", "text/plain"));
         req.terminate();
         return;
     }
 
-    std::system("/usr/bin/sudo /usr/bin/systemctl stop hildabot.service");
-    // EXDEV with rename, so copy + remove
-    std::filesystem::copy(temp_path, "/home/willi/bin/hildabot/hildabot", std::filesystem::copy_options::overwrite_existing);
-    std::filesystem::remove(temp_path);
-    chmod("/home/willi/bin/hildabot/hildabot", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
-    std::system("/usr/bin/sudo /usr/bin/systemctl start hildabot.service");
+    if (response != "SUCCESS") {
+        std::cout << "Deployer reported failure: " << response << "\n";
+        req.respond(server::response(500, "Internal Server Error", "text/plain"));
+        req.terminate();
+        return;
+    }
 
     req.respond(server::response(201, "Deployed", "text/plain"));
     req.terminate();
