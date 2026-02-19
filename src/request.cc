@@ -26,7 +26,6 @@ server::request::request(SSL_CTX* ctx, const int client_fd) {
         const char* reason = ERR_reason_error_string(error);
         std::cout << "SSL accept error: " << reason << std::endl;
 
-        SSL_free(this->ssl.get());
         close(client_fd);
         throw std::runtime_error("SSL accept failed");
     }
